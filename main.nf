@@ -452,6 +452,9 @@ process fastp {
     def pe_output1 = params.single_end ? "-o \"${name}_trimmed.fastq.gz\"" :  "-o \"${name}_trimmed_R1.fastq.gz\""
     def pe_output2 = params.single_end ? '' :  "-O \"${name}_trimmed_R2.fastq.gz\""
     """
+    echo "Sleep ${params.debug_sleep}"
+    sleep ${params.debug_sleep}
+
     fastp -w "${task.cpus}" -q "${qual}" --cut_by_quality5 \
         --cut_by_quality3 --cut_mean_quality "${trim_qual}"\
         --adapter_sequence=${adapter} --adapter_sequence_r2=${adapter_reverse} \
