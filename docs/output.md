@@ -218,7 +218,8 @@ Files in these two folders contain all contigs of an assembly.
 
 **Output directory: `results/GenomeBinning/QC/BUSCO`**
 
-- `[assembler]-[bin]_busco_log.txt`: BUSCO log file
+- `short_summary.specific.[busco_db].[bin].txt`: BUSCO summary
+- `[assembler]-[bin]_busco.log`: BUSCO log file
 - `[assembler]-[bin]_busco.fna`: Nucleotide sequence of all identified BUSCOs
 - `[assembler]-[bin]_busco.faa`: Aminoacid sequence of all identified BUSCOs
 

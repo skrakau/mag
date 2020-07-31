@@ -1214,7 +1214,7 @@ process busco_plot {
     def name = "${assembler}-${sample}"
     """
     # replace dots in bin names within summary file names with underscores
-    # (currently, v4.1.2, generate_plot.py does not allow further dots)
+    # currently, with BUSCO v4.0.6 (and v4.1.2), generate_plot.py does not allow further dots
     for sum in ${summaries}; do
         [[ \${sum} =~ short_summary.(.*).${name}.(.*).txt ]];
         db_info=\${BASH_REMATCH[1]}
