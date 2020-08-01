@@ -152,12 +152,25 @@ if (params.megahit_fix_cpu_1 || params.spades_fix_cpus || params.spadeshybrid_fi
  * Create a channel for reference databases
  */
 if(!params.skip_busco){
-    Channel
-        .fromPath( "${params.busco_reference}", checkIfExists: true )
-        .set { ch_file_busco_db }
-} else {
-    ch_file_busco_db = Channel.from()
-}
+    if ( isOffline() && params.busco_reference)
+        exit 1, "Invalid parameter combination: '--busco_reference' and NXF_OFFLINE=true or '-offline'. To run BUSCO in offline mode, please specifiy '--busco_download_folder'."
+
+    if (params.busco_reference && params.busco_download_folder )
+        exit 1, "Invalid parameter combination: specify either '--busco_reference' or '--busco_download_folder'."
+
+    if (params.busco_reference) {
+        Channel
+            .fromPath( "${params.busco_reference}", checkIfExists: true )
+            .set { ch_file_busco_db }
+    }
+    if (params.busco_download_folder) {
+        Channel
+            .fromPath( "${params.busco_download_folder}", checkIfExists: true )
+            .set { ch_busco_download_folder }
+    } else {
+        ch_busco_download_folder = Channel.empty()
+    }
+} 
 
 if(params.centrifuge_db){
     Channel
@@ -1113,26 +1126,31 @@ process metabat {
     """
 }
 
-process busco_db_preparation {
-    tag "${database.baseName}"
+if (params.busco_reference) {
+    process busco_db_preparation {
+        tag "${database.baseName}"
 
-    input:
-    file(database) from ch_file_busco_db
+        input:
+        file(database) from ch_file_busco_db
 
-    output:
-    set val("${database.toString().replace(".tar.gz", "")}"), file("buscodb/*") into ch_busco_db
+        output:
+        set val("${database.toString().replace(".tar.gz", "")}"), file("buscodb/*") into ch_busco_db
 
-    script:
-    """
-    mkdir buscodb
-    tar -xf ${database} -C buscodb
-    """
+        script:
+        """
+        mkdir buscodb
+        tar -xf ${database} -C buscodb
+        """
+    }
+} else {
+    ch_busco_db = Channel.from()
 }
 
-metabat_bins
-    .transpose()
-    .combine(ch_busco_db)
-    .set { ch_metabat_db_busco }
+
+// metabat_bins
+//     .transpose()
+//     .combine(ch_busco_db)
+//     .set { ch_metabat_db_busco }
 
 /*
  * BUSCO: Quantitative measures for the assessment of genome assembly
@@ -1142,15 +1160,31 @@ process busco {
     publishDir "${params.outdir}/GenomeBinning/QC/BUSCO/", mode: 'copy'
 
     input:
-    set val(assembler), val(sample), file(bin), val(db_name), file(db) from ch_metabat_db_busco
+    set val(assembler), val(sample), file(bin) from metabat_bins.transpose()
+    set val(db_name), file(db) from ch_busco_db.collect().ifEmpty([null, null])
+    path(download_folder) from ch_busco_download_folder.collect().ifEmpty([])
  
     output:
-    set val(assembler), val(sample), file("short_summary.specific.${db}.${bin}.txt") into (ch_busco_multiqc, ch_busco_to_summary, ch_busco_plot)
+    set val(assembler), val(sample), file("short_summary.specific.*.${bin}.txt") into (ch_busco_multiqc, ch_busco_to_summary, ch_busco_plot)
     file("${bin}_busco.log")
     file("${bin}_buscos.faa") optional true
     file("${bin}_buscos.fna") optional true
 
+    when:
+    !params.skip_busco
+
     script:
+    if (params.busco_reference)
+        p = "--lineage_dataset dataset/${db}"
+    else
+        p = "--offline"
+    // else if (params.busco_db_auto == "prok")
+    //     p = "--auto-lineage-prok --offline"
+    // else if (params.busco_db_auto == "euk")
+    //     p = "--auto-lineage-euk --offline"
+    // else
+    //     p = "--auto-lineage --offline"
+
     if( workflow.profile.toString().indexOf("conda") == -1)
         cp_augustus_config = "Y"
     else
@@ -1167,27 +1201,53 @@ process busco {
     fi
 
     # place db in extra folder to ensure BUSCO recognizes it as path (instead of downloading it)
-    mkdir dataset
-    mv ${db} dataset/
+    if [ ${params.busco_reference} != "false" ] ; then
+        mkdir dataset
+        mv ${db} dataset/
+    fi
 
-    busco \
+    # if provided, add path to busco download folder to config file
+    if [ ${params.busco_download_folder} != "false" ] ; then
+        awk -v path=${download_folder} '\$0 ~ /download_path =/ {print "download_path = "path}; \$0 !~ /download_path =/ {print \$0}' \${config_file} > config_new.ini
+        config_file=config_new.ini
+    fi
+
+    busco ${p} \
         --mode genome \
         --in ${bin} \
-        --lineage_dataset dataset/${db} \
         --config \${config_file} \
         --cpu "${task.cpus}" \
-        --out "BUSCO" > ${bin}_busco.log
+        --out "BUSCO" > ${bin}_busco.log 2> ${bin}_busco.err
 
-    cp BUSCO/short_summary.specific.${db}.BUSCO.txt short_summary.specific.${db}.${bin}.txt
+    cp BUSCO/short_summary.specific.\${db}.BUSCO.txt short_summary.specific.\${db}.${bin}.txt
 
-    for f in BUSCO/run_${db}/busco_sequences/single_copy_busco_sequences/*faa; do
-        [ -e "\$f" ] && cat BUSCO/run_${db}/busco_sequences/single_copy_busco_sequences/*faa >${bin}_buscos.faa
-        break
-    done
-    for f in BUSCO/run_${db}/busco_sequences/single_copy_busco_sequences/*fna; do
-        [ -e "\$f" ] && cat BUSCO/run_${db}/busco_sequences/single_copy_busco_sequences/*fna >${bin}_buscos.fna
-        break
-    done
+    # TODO handle errors -> env
+    if grep -q "ERROR" ${bin}_busco.err; then
+        echo "ERROR: BUSCO could not select lineage or so!"
+        BUSCO_SUCCESS=false
+    else
+        # get used lineage db name, necessary for auto selection
+        # at least for auto-lineage: "short_summary.specific" contains desired results
+        for sum in BUSCO_${bin}/short_summary.specific.*.BUSCO_${bin}.txt ; do
+            if [ -e "\$sum" ]; then
+                [[ \$sum =~ BUSCO_${bin}/short_summary.specific.(.*).BUSCO_${bin}.txt ]];
+                run_db=\${BASH_REMATCH[1]}
+            fi
+        done
+        echo "Lineage dataset used: \${run_db}"
+
+        cp BUSCO_${bin}/short_summary.specific.\${run_db}.BUSCO_${bin}.txt short_summary.${bin}.txt
+
+        for f in BUSCO_${bin}/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*faa; do
+            [ -e "\$f" ] && cat BUSCO_${bin}/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*faa >${bin}_buscos.faa
+            break
+        done
+        for f in BUSCO_${bin}/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*fna; do
+            [ -e "\$f" ] && cat BUSCO_${bin}/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*fna >${bin}_buscos.fna
+            break
+        done
+        BUSCO_SUCCESS=true
+    fi
     """
 }
 
@@ -1576,5 +1636,15 @@ def checkHostname() {
                 }
             }
         }
+    }
+}
+
+// Function to check if running offline
+def isOffline() {
+    try {
+        return NXF_OFFLINE as Boolean
+    }
+    catch( Exception e ) {
+        return false
     }
 }
