@@ -415,8 +415,9 @@ process get_software_versions {
     porechop --version > v_porechop.txt
     NanoLyse --version > v_nanolyse.txt
     spades.py --version > v_spades.txt
-    busco --version > v_busco.txt
-    centrifuge --version > v_centrifuge.txt
+    #busco --version > v_busco.txt
+    #centrifuge --version > v_centrifuge.txt
+    # TODO parse centrifuge environment.yml ?
     kraken2 -v > v_kraken2.txt
     CAT -v > v_cat.txt
     quast -v > v_quast.txt
@@ -1191,6 +1192,9 @@ process busco {
         cp_augustus_config = "N"
 
     """
+    #mkdir another_tmp
+    #export TMPDIR=./another_tmp/
+
     # get path to custom config file for busco (already configured during installation)
     busco_path=\$(which busco)
     config_file="\${busco_path%bin/busco}config/config.ini"
@@ -1202,6 +1206,7 @@ process busco {
 
     # place db in extra folder to ensure BUSCO recognizes it as path (instead of downloading it)
     if [ ${params.busco_reference} != "false" ] ; then
+        ls -lh ${db}    # just to check before BUSCO call, if actually missing (rule out related to other problem!)
         mkdir dataset
         mv ${db} dataset/
     fi
@@ -1218,32 +1223,33 @@ process busco {
         --config \${config_file} \
         --cpu "${task.cpus}" \
         --out "BUSCO" > ${bin}_busco.log 2> ${bin}_busco.err
+    retval=\$?
+    echo "BUSCOs return value is \${retval}"
 
-    cp BUSCO/short_summary.specific.\${db}.BUSCO.txt short_summary.specific.\${db}.${bin}.txt
-
-    # TODO handle errors -> env
     if grep -q "ERROR" ${bin}_busco.err; then
         echo "ERROR: BUSCO could not select lineage or so!"
+        cp BUSCO/short_summary.specific.\${run_db}.BUSCO.txt short_summary.specific.\${run_db}.${bin}.txt   # should cause error
         BUSCO_SUCCESS=false
+        # Doesn#t make sence that in one case summary contains 0 matches, and in other case error!
     else
         # get used lineage db name, necessary for auto selection
         # at least for auto-lineage: "short_summary.specific" contains desired results
-        for sum in BUSCO_${bin}/short_summary.specific.*.BUSCO_${bin}.txt ; do
+        for sum in BUSCO/short_summary.specific.*.BUSCO.txt ; do
             if [ -e "\$sum" ]; then
-                [[ \$sum =~ BUSCO_${bin}/short_summary.specific.(.*).BUSCO_${bin}.txt ]];
+                [[ \$sum =~ BUSCO/short_summary.specific.(.*).BUSCO.txt ]];
                 run_db=\${BASH_REMATCH[1]}
             fi
         done
         echo "Lineage dataset used: \${run_db}"
 
-        cp BUSCO_${bin}/short_summary.specific.\${run_db}.BUSCO_${bin}.txt short_summary.${bin}.txt
+        cp BUSCO/short_summary.specific.\${run_db}.BUSCO.txt short_summary.specific.\${run_db}.${bin}.txt
 
-        for f in BUSCO_${bin}/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*faa; do
-            [ -e "\$f" ] && cat BUSCO_${bin}/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*faa >${bin}_buscos.faa
+        for f in BUSCO/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*faa; do
+            [ -e "\$f" ] && cat BUSCO/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*faa >${bin}_buscos.faa
             break
         done
-        for f in BUSCO_${bin}/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*fna; do
-            [ -e "\$f" ] && cat BUSCO_${bin}/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*fna >${bin}_buscos.fna
+        for f in BUSCO/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*fna; do
+            [ -e "\$f" ] && cat BUSCO/run_\${run_db}/busco_sequences/single_copy_busco_sequences/*fna >${bin}_buscos.fna
             break
         done
         BUSCO_SUCCESS=true
@@ -1274,7 +1280,7 @@ process busco_plot {
     def name = "${assembler}-${sample}"
     """
     # replace dots in bin names within summary file names with underscores
-    # currently, with BUSCO v4.0.6 (and v4.1.2), generate_plot.py does not allow further dots
+    # currently (BUSCO v4.1.2), generate_plot.py does not allow further dots
     for sum in ${summaries}; do
         [[ \${sum} =~ short_summary.(.*).${name}.(.*).txt ]];
         db_info=\${BASH_REMATCH[1]}

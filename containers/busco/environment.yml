@@ -1,0 +1,17 @@
+# You can use this file to create a conda environment for this pipeline:
+#   conda env create -f environment.yml
+name: nf-core-mag-busco-1.1.0dev
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - conda-forge::python=3.7.3
+  - bioconda::prodigal=2.6.3
+  - bioconda::augustus=3.3.3  # ?
+  - bioconda::diamond=2.0.1
+  - conda-forge::cairo=1.16.0
+  - conda-forge::r-rgtk2=2.20.36
+  - conda-forge::r-base=4.0.2
+  - conda-forge::r-ggplot2=3.3.2
+  - bioconda::busco=4.1.2
