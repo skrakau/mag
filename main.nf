@@ -248,19 +248,33 @@ if(params.manifest){
         .ifEmpty {exit 1, log.info "Cannot find path file ${tsvFile}"}
         .splitCsv(sep:'\t')
         .map { row ->
-            def id = row[0]
-            def lr = file(row[1], checkIfExists: true)
-            def sr1 = file(row[2], checkIfExists: true)
-            def sr2 = file(row[3], checkIfExists: true)
-            [ id, lr, sr1, sr2 ]
+                if (row.size() == 4) {
+                    def id = row[0]
+                    def lr = file(row[1], checkIfExists: true)
+                    def sr1 = file(row[2], checkIfExists: true)
+                    def sr2 = file(row[3], checkIfExists: true)
+                    return [ id, lr, sr1, sr2 ]}
+                else if (row.size() == 3) {
+                    def id = row[0]
+                    def sr1 = file(row[1], checkIfExists: true)
+                    def sr2 = file(row[2], checkIfExists: true)
+                    return [ id, sr1, sr2 ]}
+                else {
+                    exit 1, "Input manifest contains row with ${row.size()} column(s). Expects 3 or 4."
+                }
             }
         .into { files_all_sr; files_all_lr }
     // prepare input for preprocessing
     files_all_sr
-        .map { id, lr, sr1, sr2 -> [ id, [ sr1, sr2 ] ] }
+        .map { row ->
+                if (row.size() == 4) [ row[0], [ row[2], row[3] ] ]
+                else if (row.size() == 3) [ row[0], [ row[1], row[2] ] ]
+        }
         .into { read_files_fastqc; read_files_fastp }
     files_all_lr
-        .map { id, lr, sr1, sr2 -> [ id, lr ] }
+        .map { row ->
+                if (row.size() == 4) [ row[0], row[1] ]
+        }
         .set { files_long_raw }
 } else if(params.input_paths){
     if(params.single_end){
@@ -732,6 +746,7 @@ if (!params.keep_lambda) {
 }
 
 // join long and short (already filtered) reads by sample name
+// TODO CHECK: this would cause problems if multiple entries in manifest with same sample id !?
 files_nanolyse
     .join(trimmed_reads_filtlong)
     .map{ id, lr, sr -> [ id, lr, sr[0], sr[1] ] }
@@ -950,7 +965,7 @@ process megahit {
 /*
  * metaSpades hybrid Assembly
  */
-
+// TODO CHECK: this would cause problems if multiple entries in manifest with same sample id !?
  files_lr_filtered
     .combine(trimmed_sr_spadeshybrid, by: 0)
     .set { files_pre_spadeshybrid }
