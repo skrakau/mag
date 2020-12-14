@@ -159,39 +159,39 @@ if (params.megahit_fix_cpu_1 || params.spades_fix_cpus || params.spadeshybrid_fi
 if(!params.skip_busco){
     Channel
         .fromPath( "${params.busco_reference}", checkIfExists: true )
-        .set { file_busco_db }
+        .set { ch_busco_db_file }
 } else {
-    file_busco_db = Channel.from()
+    ch_busco_db_file = Channel.from()
 }
 
 if(params.centrifuge_db){
     Channel
         .fromPath( "${params.centrifuge_db}", checkIfExists: true )
-        .set { file_centrifuge_db }
+        .set { ch_centrifuge_db_file }
 } else {
-    file_centrifuge_db = Channel.from()
+    ch_centrifuge_db_file = Channel.from()
 }
 
 if(params.kraken2_db){
     Channel
         .fromPath( "${params.kraken2_db}", checkIfExists: true )
-        .set { file_kraken2_db }
+        .set { ch_kraken2_db_file }
 } else {
-    file_kraken2_db = Channel.from()
+    ch_kraken2_db_file = Channel.from()
 }
 
 if(params.cat_db){
     Channel
         .fromPath( "${params.cat_db}", checkIfExists: true )
-        .set { file_cat_db }
+        .set { ch_cat_db_file }
 } else {
-    file_cat_db = Channel.from()
+    ch_cat_db_file = Channel.from()
 }
 
 if(!params.keep_phix) {
     Channel
         .fromPath( "${params.phix_reference}", checkIfExists: true )
-        .set { file_phix_db }
+        .set { ch_phix_db_file }
 }
 
 /*
@@ -239,6 +239,8 @@ if ( params.host_genome ) {
 /*
  * Create a channel for input read files
  */
+// TODO check if sample names unique! (long and short reads will be joind by its). OK?
+// TODO allow  binning_map_mode = 'separate' only with coassemble_group = false (otherwise currently mapping of sample reads to assembly wrong)
 
 if(params.manifest){
     manifestFile = file(params.manifest)
@@ -248,56 +250,54 @@ if(params.manifest){
         .ifEmpty {exit 1, log.info "Cannot find path file ${tsvFile}"}
         .splitCsv(sep:'\t')
         .map { row ->
-                if (row.size() == 4) {
-                    def id = row[0]
-                    def lr = file(row[1], checkIfExists: true)
+                if (row.size() == 5) {
+                    def name = row[0]
+                    def grp = row[1]
                     def sr1 = file(row[2], checkIfExists: true)
                     def sr2 = file(row[3], checkIfExists: true)
-                    return [ id, lr, sr1, sr2 ]}
-                else if (row.size() == 3) {
-                    def id = row[0]
-                    def sr1 = file(row[1], checkIfExists: true)
-                    def sr2 = file(row[2], checkIfExists: true)
-                    return [ id, sr1, sr2 ]}
+                    def lr = file(row[4], checkIfExists: true)
+                    return [ name, grp, sr1, sr2, lr ]}
+                else if (row.size() == 4) {
+                    def name = row[0]
+                    def grp = row[1]
+                    def sr1 = file(row[2], checkIfExists: true)
+                    def sr2 = file(row[3], checkIfExists: true)
+                    return [ name, grp, sr1, sr2 ]}
                 else {
-                    exit 1, "Input manifest contains row with ${row.size()} column(s). Expects 3 or 4."
+                    exit 1, "Input manifest contains row with ${row.size()} column(s). Expects 4 or 5."
                 }
             }
-        .into { files_all_sr; files_all_lr }
+        .into { ch_all_files_sr; ch_all_files_lr }
     // prepare input for preprocessing
-    files_all_sr
-        .map { row ->
-                if (row.size() == 4) [ row[0], [ row[2], row[3] ] ]
-                else if (row.size() == 3) [ row[0], [ row[1], row[2] ] ]
-        }
-        .into { read_files_fastqc; read_files_fastp }
-    files_all_lr
-        .map { row ->
-                if (row.size() == 4) [ row[0], row[1] ]
-        }
-        .set { files_long_raw }
+    ch_all_files_sr
+        .map { row -> [ row[0], row[1], [ row[2], row[3] ] ] }
+        .into { ch_raw_reads_fastqc; ch_raw_reads_fastp }
+    ch_all_files_lr
+        .map { row -> if (row.size() == 5) [ row[0], row[1], row[4] ] }
+        .set { ch_long_reads_raw }
 } else if(params.input_paths){
     if(params.single_end){
         Channel
             .from(params.input_paths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true) ] ] }
+            .map { row -> [ row[0], 0, [ file(row[1][0], checkIfExists: true) ] ] }
             .ifEmpty { exit 1, "params.input_paths was empty - no input files supplied" }
-            .into { read_files_fastqc; read_files_fastp }
-        files_long_raw = Channel.from()
+            .into { ch_raw_reads_fastqc; ch_raw_reads_fastp }
+        ch_long_reads_raw = Channel.from()
     } else {
         Channel
             .from(params.input_paths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
+            .map { row -> [ row[0], 0, [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
             .ifEmpty { exit 1, "params.input_paths was empty - no input files supplied" }
-            .into { read_files_fastqc; read_files_fastp }
-        files_long_raw = Channel.from()
+            .into { ch_raw_reads_fastqc; ch_raw_reads_fastp }
+        ch_long_reads_raw = Channel.from()
     }
  } else {
     Channel
-        .fromFilePairs(params.input, size: params.single_end ? 1 : 2)
+        .fromFilePairs(params.input, size: params.single_end ? 1 : 2, checkIfExists: true)
+        .map { row -> [ row[0], 0, row[1] ] }
         .ifEmpty { exit 1, "Cannot find any reads matching: ${params.input}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --single_end on the command line." }
-        .into { read_files_fastqc; read_files_fastp }
-    files_long_raw = Channel.from()
+        .into { ch_raw_reads_fastqc; ch_raw_reads_fastp }
+    ch_long_reads_raw = Channel.from()
 }
 
 // Header log info
@@ -459,10 +459,10 @@ process fastqc_raw {
         saveAs: {filename -> filename.indexOf(".zip") == -1 ? "QC_shortreads/fastqc/$filename" : null}
 
     input:
-    set val(name), file(reads) from read_files_fastqc
+    set val(name), val(grp), file(reads) from ch_raw_reads_fastqc
 
     output:
-    file "*_fastqc.{zip,html}" into fastqc_results
+    file "*_fastqc.{zip,html}" into ch_fastqc_results
 
     script:
     """
@@ -476,14 +476,14 @@ process fastp {
         saveAs: {filename -> filename.indexOf(".fastq.gz") == -1 ? "QC_shortreads/fastp/$name/$filename" : null}
 
     input:
-    set val(name), file(reads) from read_files_fastp
+    set val(name), val(grp), file(reads) from ch_raw_reads_fastp
     val adapter from params.adapter_forward
     val adapter_reverse from params.adapter_reverse
     val qual from params.mean_quality
     val trim_qual from params.trimming_quality
 
     output:
-    set val(name), file("${name}_trimmed*.fastq.gz") into trimmed_reads
+    set val(name), val(grp), file("${name}_trimmed*.fastq.gz") into ch_trimmed_reads
     file("fastp.*")
 
     script:
@@ -501,7 +501,7 @@ process fastp {
 /*
  * Remove host read contamination
  */
-(trimmed_reads, ch_trimmed_reads_remove_host) = trimmed_reads.into(2)
+(ch_trimmed_reads, ch_trimmed_reads_remove_host) = ch_trimmed_reads.into(2)
 
 process host_bowtie2index {
     tag "${genome}"
@@ -530,11 +530,11 @@ process remove_host {
                 }
 
     input:
-    set val(name), file(reads) from ch_trimmed_reads_remove_host
+    set val(name), val(grp), file(reads) from ch_trimmed_reads_remove_host
     file(index) from ch_host_bowtie2index
 
     output:
-    set val(name), file("${name}_host_unmapped*.fastq.gz") into ch_trimmed_reads_host_removed
+    set val(name), val(grp), file("${name}_host_unmapped*.fastq.gz") into ch_trimmed_reads_host_removed
     file("${name}.bowtie2.log") into ch_host_removed_log
     file("${name}_host_mapped*.read_ids.txt") optional true
 
@@ -579,7 +579,7 @@ process remove_host {
     }
 }
 
-if ( params.host_fasta || params.host_genome ) trimmed_reads = ch_trimmed_reads_host_removed
+if ( params.host_fasta || params.host_genome ) ch_trimmed_reads = ch_trimmed_reads_host_removed
 else ch_trimmed_reads_remove_host.close()
 
 /*
@@ -591,10 +591,10 @@ if(!params.keep_phix) {
         tag "${genome}"
 
         input:
-        file(genome) from file_phix_db
+        file(genome) from ch_phix_db_file
 
         output:
-        set file(genome), file("ref*") into phix_db
+        set file(genome), file("ref*") into ch_phix_db
 
         script:
         """
@@ -609,10 +609,10 @@ if(!params.keep_phix) {
             saveAs: {filename -> filename.indexOf(".fastq.gz") == -1 ? "QC_shortreads/remove_phix/$filename" : null}
 
         input:
-        set val(name), file(reads), file(genome), file(db) from trimmed_reads.combine(phix_db)
+        set val(name), val(grp), file(reads), file(genome), file(db) from ch_trimmed_reads.combine(ch_phix_db)
 
         output:
-        set val(name), file("*.fastq.gz") into (trimmed_reads_megahit, trimmed_reads_metabat, trimmed_reads_fastqc, trimmed_sr_spadeshybrid, trimmed_reads_spades, trimmed_reads_centrifuge, trimmed_reads_kraken2, trimmed_reads_bowtie2, trimmed_reads_filtlong)
+        set val(name), val(grp), file("*.fastq.gz") into (ch_short_reads_assembly, ch_trimmed_reads_metabat, ch_trimmed_reads_fastqc, ch_trimmed_reads_centrifuge, ch_trimmed_reads_kraken2, ch_trimmed_reads_bowtie2, ch_trimmed_reads_filtlong)
         file("${name}_remove_phix.log")
 
         script:
@@ -645,7 +645,7 @@ if(!params.keep_phix) {
 
     }
 } else {
-    trimmed_reads.into {trimmed_reads_megahit; trimmed_reads_metabat; trimmed_reads_fastqc; trimmed_sr_spadeshybrid; trimmed_reads_spades; trimmed_reads_centrifuge; trimmed_reads_kraken2; trimmed_reads_bowtie2; trimmed_reads_filtlong}
+    ch_trimmed_reads.into {ch_short_reads_assembly; ch_trimmed_reads_metabat; ch_trimmed_reads_fastqc; ch_trimmed_reads_centrifuge; ch_trimmed_reads_kraken2; ch_trimmed_reads_bowtie2; ch_trimmed_reads_filtlong}
 }
 
 process fastqc_trimmed {
@@ -654,10 +654,10 @@ process fastqc_trimmed {
         saveAs: {filename -> filename.indexOf(".zip") == -1 ? "QC_shortreads/fastqc/$filename" : null}
 
     input:
-    set val(name), file(reads) from trimmed_reads_fastqc
+    set val(name), val(grp), file(reads) from ch_trimmed_reads_fastqc
 
     output:
-    file "*_fastqc.{zip,html}" into fastqc_results_trimmed
+    file "*_fastqc.{zip,html}" into ch_fastqc_results_trimmed
 
     script:
     if ( !params.single_end ) {
@@ -688,26 +688,26 @@ process fastqc_trimmed {
  */
 if (!params.skip_adapter_trimming) {
     process porechop {
-        tag "$id"
+        tag "$name"
 
         input:
-        set id, file(lr) from files_long_raw
+        set name, grp, file(lr) from ch_long_reads_raw
 
         output:
-        set id, file("${id}_porechop.fastq") into files_porechop
-        set id, file(lr), val("raw") into files_nanoplot_raw
+        set name, grp, file("${name}_porechop.fastq") into ch_files_porechop
+        set name, grp, file(lr), val("raw") into ch_files_nanoplot_raw
 
         script:
         """
-        porechop -i ${lr} -t "${task.cpus}" -o ${id}_porechop.fastq
+        porechop -i ${lr} -t "${task.cpus}" -o ${name}_porechop.fastq
         """
     }
 } else {
-    files_long_raw
-        .into{ files_porechop; pre_files_nanoplot_raw }
-    pre_files_nanoplot_raw
-        .map { id, lr -> [ id, lr, "raw" ] }
-        .set { files_nanoplot_raw }
+    ch_long_reads_raw
+        .into{ ch_files_porechop; ch_pre_files_nanoplot_raw }
+    ch_pre_files_nanoplot_raw
+        .map { name, grp, lr -> [ name, grp, lr, "raw" ] }
+        .set { ch_files_nanoplot_raw }
 }
 
 /*
@@ -717,53 +717,52 @@ if (!params.skip_adapter_trimming) {
 if (!params.keep_lambda) {
     Channel
         .fromPath( "${params.lambda_reference}", checkIfExists: true )
-        .set { file_nanolyse_db }
+        .set { ch_nanolyse_db }
     process nanolyse {
-        tag "$id"
+        tag "$name"
 
         publishDir "${params.outdir}", mode: params.publish_dir_mode,
             saveAs: {filename -> filename.indexOf(".fastq.gz") == -1 ? "QC_longreads/NanoLyse/$filename" : null}
 
         input:
-        set id, file(lr), file(nanolyse_db) from files_porechop.combine(file_nanolyse_db)
+        set name, grp, file(lr), file(nanolyse_db) from ch_files_porechop.combine(ch_nanolyse_db)
 
         output:
-        set id, file("${id}_nanolyse.fastq.gz") into files_nanolyse
-        file("${id}_nanolyse.log")
+        set name, grp, file("${name}_nanolyse.fastq.gz") into ch_nanolyse
+        file("${name}_nanolyse.log")
 
         script:
         """
-        cat ${lr} | NanoLyse --reference $nanolyse_db | gzip > ${id}_nanolyse.fastq.gz
+        cat ${lr} | NanoLyse --reference $nanolyse_db | gzip > ${name}_nanolyse.fastq.gz
 
-        echo "NanoLyse reference: $params.lambda_reference" >${id}_nanolyse.log
-        cat ${lr} | echo "total reads before NanoLyse: \$((`wc -l`/4))" >>${id}_nanolyse.log
-        gunzip -c ${id}_nanolyse.fastq.gz | echo "total reads after NanoLyse: \$((`wc -l`/4))" >>${id}_nanolyse.log
+        echo "NanoLyse reference: $params.lambda_reference" >${name}_nanolyse.log
+        cat ${lr} | echo "total reads before NanoLyse: \$((`wc -l`/4))" >>${name}_nanolyse.log
+        gunzip -c ${name}_nanolyse.fastq.gz | echo "total reads after NanoLyse: \$((`wc -l`/4))" >>${name}_nanolyse.log
         """
     }
 } else {
-    files_porechop
-        .set{ files_nanolyse }
+    ch_files_porechop
+        .set{ ch_nanolyse }
 }
 
 // join long and short (already filtered) reads by sample name
-// TODO CHECK: this would cause problems if multiple entries in manifest with same sample id !?
-files_nanolyse
-    .join(trimmed_reads_filtlong)
-    .map{ id, lr, sr -> [ id, lr, sr[0], sr[1] ] }
+ch_nanolyse
+    .join(ch_trimmed_reads_filtlong, by: [0,1])
+    .map{ name, grp, lr, sr -> [ name, grp, lr, sr[0], sr[1] ] }
     .set{ ch_files_filtlong }
 
 /*
  * Quality filter long reads focus on length instead of quality to improve assembly size
  */
 process filtlong {
-    tag "$id"
+    tag "$name"
 
     input:
-    set id, file(lr), file(sr1), file(sr2) from ch_files_filtlong
+    set name, grp, file(lr), file(sr1), file(sr2) from ch_files_filtlong
 
     output:
-    set id, file("${id}_lr_filtlong.fastq.gz") into files_lr_filtered
-    set id, file("${id}_lr_filtlong.fastq.gz"), val('filtered') into files_nanoplot_filtered
+    set name, grp, file("${name}_lr_filtlong.fastq.gz") into ch_long_reads_assembly
+    set name, grp, file("${name}_lr_filtlong.fastq.gz"), val('filtered') into ch_nanoplot_filtered
 
     script:
     """
@@ -774,7 +773,8 @@ process filtlong {
         --keep_percent ${params.longreads_keep_percent} \
         --trim \
         --length_weight ${params.longreads_length_weight} \
-        ${lr} | gzip > ${id}_lr_filtlong.fastq.gz
+        ${lr} | gzip > ${name}_lr_filtlong.fastq.gz
+    echo "test"
     """
 }
 
@@ -782,11 +782,11 @@ process filtlong {
  * Quality check for nanopore reads and Quality/Length Plots
  */
 process nanoplot {
-    tag "$id"
-    publishDir "${params.outdir}/QC_longreads/NanoPlot_${id}", mode: params.publish_dir_mode
+    tag "$name"
+    publishDir "${params.outdir}/QC_longreads/NanoPlot_${name}", mode: params.publish_dir_mode
 
     input:
-    set id, file(lr), type from files_nanoplot_raw.mix(files_nanoplot_filtered)
+    set name, grp, file(lr), type from ch_files_nanoplot_raw.mix(ch_nanoplot_filtered)
 
     output:
     file '*.png'
@@ -795,7 +795,7 @@ process nanoplot {
 
     script:
     """
-    NanoPlot -t "${task.cpus}" -p ${type}_  --title ${id}_${type} -c darkblue --fastq ${lr}
+    NanoPlot -t "${task.cpus}" -p ${type}_  --title ${name}_${type} -c darkblue --fastq ${lr}
     """
 }
 
@@ -807,10 +807,10 @@ process nanoplot {
 
 process centrifuge_db_preparation {
     input:
-    file(db) from file_centrifuge_db
+    file(db) from ch_centrifuge_db_file
 
     output:
-    set val("${db.toString().replace(".tar.gz", "")}"), file("*.cf") into centrifuge_database
+    set val("${db.toString().replace(".tar.gz", "")}"), file("*.cf") into ch_centrifuge_db
 
     script:
     """
@@ -818,9 +818,9 @@ process centrifuge_db_preparation {
     """
 }
 
-trimmed_reads_centrifuge
-    .combine(centrifuge_database)
-    .set { centrifuge_input }
+ch_trimmed_reads_centrifuge
+    .combine(ch_centrifuge_db)
+    .set { ch_centrifuge_input }
 
 process centrifuge {
     tag "${name}-${db_name}"
@@ -828,10 +828,10 @@ process centrifuge {
             saveAs: {filename -> filename.indexOf(".krona") == -1 ? filename : null}
 
     input:
-    set val(name), file(reads), val(db_name), file(db) from centrifuge_input
+    set val(name), val(grp), file(reads), val(db_name), file(db) from ch_centrifuge_input
 
     output:
-    set val("centrifuge"), val(name), file("results.krona") into centrifuge_to_krona
+    set val("centrifuge"), val(name), file("results.krona") into ch_centrifuge_to_krona
     file("report.txt")
     file("kreport.txt")
 
@@ -850,10 +850,10 @@ process centrifuge {
 
 process kraken2_db_preparation {
     input:
-    file(db) from file_kraken2_db
+    file(db) from ch_kraken2_db_file
 
     output:
-    set val("${db.baseName}"), file("*/*.k2d") into kraken2_database
+    set val("${db.baseName}"), file("*/*.k2d") into ch_kraken2_db
 
     script:
     """
@@ -861,9 +861,9 @@ process kraken2_db_preparation {
     """
 }
 
-trimmed_reads_kraken2
-    .combine(kraken2_database)
-    .set { kraken2_input }
+ch_trimmed_reads_kraken2
+    .combine(ch_kraken2_db)
+    .set { ch_kraken2_input }
 
 process kraken2 {
     tag "${name}-${db_name}"
@@ -871,10 +871,10 @@ process kraken2 {
             saveAs: {filename -> filename.indexOf(".krona") == -1 ? filename : null}
 
     input:
-    set val(name), file(reads), val(db_name), file("database/*") from kraken2_input
+    set val(name), val(grp), file(reads), val(db_name), file("database/*") from ch_kraken2_input
 
     output:
-    set val("kraken2"), val(name), file("results.krona") into kraken2_to_krona
+    set val("kraken2"), val(name), file("results.krona") into ch_kraken2_to_krona
     file("kraken2_report.txt")
 
     script:
@@ -893,7 +893,7 @@ process kraken2 {
 
 process krona_db {
     output:
-    file("taxonomy/taxonomy.tab") into file_krona_db
+    file("taxonomy/taxonomy.tab") into ch_krona_db
 
     when:
     ( params.centrifuge_db || params.kraken2_db ) && !params.skip_krona
@@ -904,17 +904,17 @@ process krona_db {
     """
 }
 
-centrifuge_to_krona
-    .mix(kraken2_to_krona)
-    .combine(file_krona_db)
-    .set { krona_input }
+ch_centrifuge_to_krona
+    .mix(ch_kraken2_to_krona)
+    .combine(ch_krona_db)
+    .set { ch_krona_input }
 
 process krona {
     tag "${classifier}-${name}"
     publishDir "${params.outdir}/Taxonomy/${classifier}/${name}", mode: params.publish_dir_mode
 
     input:
-    set val(classifier), val(name), file(report), file("taxonomy/taxonomy.tab") from krona_input
+    set val(classifier), val(name), file(report), file("taxonomy/taxonomy.tab") from ch_krona_input
 
     output:
     file("*.html")
@@ -927,9 +927,91 @@ process krona {
 
 /*
 ================================================================================
-                                Assembly
+                                (Co)-Assembly
 ================================================================================
 */
+
+// Co-assembly: prepare grouping for MEGAHIT and pool reads for SPAdes
+if (params.coassemble_group) {
+    // short reads
+    // group and set group as new name
+    ch_short_reads_assembly
+        .groupTuple(by: 1)
+        .view()
+        .map { names, grp, reads ->
+                if (!params.single_end) [ "group$grp", grp, reads.collect { it[0] }, reads.collect { it[1] } ]
+                else [ "group$grp", grp, reads.collect { it[0] }, [] ] }
+        .view()
+        .into { ch_short_reads_grouped; ch_short_reads_megahit }
+
+    // pool short reads for SPAdes assembly
+    process pool_short_reads {
+        tag "$name"
+
+        input:
+        set val(name), val(grp), file(reads1), file(reads2) from ch_short_reads_grouped
+
+        output:
+        set val(name), val(grp), file("pooled_${grp}*.fastq.gz") into (ch_short_reads_spadeshybrid, ch_short_reads_spades)
+
+        script:
+        if ( !params.single_end ) {
+            """
+            echo "Pooling samples: ${name}"
+            cat ${reads1} > pooled_${grp}_R1.fastq.gz
+            cat ${reads2} > pooled_${grp}_R2.fastq.gz
+            """
+        } else {
+            """
+            echo "Pooling samples: ${name}"
+            cat ${reads1} > pooled_${grp}.fastq.gz
+            """
+        }
+    }
+
+    // long reads
+    ch_long_reads_assembly
+        .groupTuple(by: 1)
+        .view()
+        .map { names, grp, reads -> [ "group$grp", grp, reads.collect { it } ] }
+        .view()
+        .set { ch_long_reads_grouped }
+
+    // pool long reads for SPAdes assembly
+    process pool_long_reads {
+        tag "$name"
+
+        input:
+        set val(name), val(grp), file(reads) from ch_long_reads_grouped
+
+        output:
+        set val(name), val(grp), file("pooled_${grp}_lr.fastq.gz") into (ch_long_reads_spadeshybrid)
+
+        script:
+        """
+        echo "Pooling samples: ${name}"
+        cat ${reads} > pooled_${grp}_lr.fastq.gz
+        """
+    }
+} else {
+    ch_short_reads_assembly
+        .into { ch_short_reads_spadeshybrid; ch_short_reads_spades; ch_short_reads_megahit }
+
+    ch_short_reads_megahit
+        .view()
+        .map { name, grp, reads ->
+                if (!params.single_end) [ name, grp, [reads[0]], [reads[1]] ]
+                else [ name, grp, [reads[0]], [] ] }
+        .view()
+        .set { ch_short_reads_megahit }
+
+    ch_long_reads_assembly
+        .view()
+        .map { name, grp, reads -> [ name, grp, [reads] ] }
+        .view()
+        .set { ch_long_reads_spadeshybrid }
+}
+
 
 process megahit {
     tag "$name"
@@ -939,10 +1021,10 @@ process megahit {
           else null}
 
     input:
-    set val(name), file(reads) from trimmed_reads_megahit
+    set val(name), val(grp), file(reads1), file(reads2) from ch_short_reads_megahit 
 
     output:
-    set val("MEGAHIT"), val("$name"), file("MEGAHIT/${name}.contigs.fa") into (assembly_megahit_to_quast, assembly_megahit_to_metabat)
+    set val("MEGAHIT"), val("$name"), val(grp), file("MEGAHIT/${name}.contigs.fa") into (ch_assembly_megahit_to_quast, ch_assembly_megahit_to_metabat)
     file("MEGAHIT/*.log")
     file("MEGAHIT/${name}.contigs.fa.gz")
 
@@ -950,42 +1032,50 @@ process megahit {
     !params.skip_megahit
 
     script:
-    def input = params.single_end ? "-r \"${reads}\"" :  "-1 \"${reads[0]}\" -2 \"${reads[1]}\""
     mem = task.memory.toBytes()
-    if ( !params.megahit_fix_cpu_1 || task.cpus == 1 )
+    if ( !params.megahit_fix_cpu_1 || task.cpus == 1 ) {
+        def input
+        if ( params.coassemble_group ) {
+            def reads1_str = reads1.join(",")
+            def reads2_str = reads2.join(",")
+            input = params.single_end ? "-r \"${reads1}\"" :  "-1 \"${reads1_str}\" -2 \"${reads2_str}\""
+        } else {
+            input = params.single_end ? "-r \"${reads1}\"" :  "-1 \"${reads1}\" -2 \"${reads2}\""
+        }
         """
         megahit -t "${task.cpus}" -m $mem $input -o MEGAHIT --out-prefix "${name}"
         gzip -c "MEGAHIT/${name}.contigs.fa" > "MEGAHIT/${name}.contigs.fa.gz"
         """
-    else
+    } else {
         error "ERROR: '--megahit_fix_cpu_1' was specified, but not succesfully applied. Likely this is caused by changed process properties in a custom config file."
+    }
 }
 
 
 /*
  * metaSpades hybrid Assembly
  */
-// TODO CHECK: this would cause problems if multiple entries in manifest with same sample id !?
- files_lr_filtered
-    .combine(trimmed_sr_spadeshybrid, by: 0)
-    .set { files_pre_spadeshybrid }
+ch_long_reads_spadeshybrid
+    .combine(ch_short_reads_spadeshybrid, by: [0,1])
+    //.view()
+    .set { ch_reads_spadeshybrid }
 
 process spadeshybrid {
-    tag "$id"
-    publishDir "${params.outdir}/", mode: params.publish_dir_mode, pattern: "${id}*",
+    tag "$name"
+    publishDir "${params.outdir}/", mode: params.publish_dir_mode, pattern: "${name}*",
         saveAs: {filename -> 
           if (filename.indexOf(".log") > 0 || filename.indexOf("_scaffolds.fasta.gz") > 0 || filename.indexOf("_graph.gfa.gz") > 0 || filename.indexOf("_contigs.fasta.gz") > 0 ) "Assembly/SPAdesHybrid/$filename"
           else null}
 
     input:
-    set id, file(lr), file(sr) from files_pre_spadeshybrid  
+    set name, grp, file(lr), file(sr) from ch_reads_spadeshybrid
 
     output:
-    set val("SPAdesHybrid"), val("$id"), file("${id}_scaffolds.fasta") into (assembly_spadeshybrid_to_quast, assembly_spadeshybrid_to_metabat)
-    file("${id}.log")
-    file("${id}_contigs.fasta.gz")
-    file("${id}_scaffolds.fasta.gz")
-    file("${id}_graph.gfa.gz")
+    set val("SPAdesHybrid"), val("$name"), val(grp), file("${name}_scaffolds.fasta") into (ch_assembly_spadeshybrid_to_quast, ch_assembly_spadeshybrid_to_metabat)
+    file("${name}.log")
+    file("${name}_contigs.fasta.gz")
+    file("${name}_scaffolds.fasta.gz")
+    file("${name}_graph.gfa.gz")
 
     when:
     params.manifest && !params.single_end && !params.skip_spadeshybrid
@@ -1001,13 +1091,13 @@ process spadeshybrid {
             --pe1-2 ${sr[1]} \
             --nanopore ${lr} \
             -o spades
-        mv spades/assembly_graph_with_scaffolds.gfa ${id}_graph.gfa
-        mv spades/scaffolds.fasta ${id}_scaffolds.fasta
-        mv spades/contigs.fasta ${id}_contigs.fasta
-        mv spades/spades.log ${id}.log
-        gzip "${id}_contigs.fasta"
-        gzip "${id}_graph.gfa"
-        gzip -c "${id}_scaffolds.fasta" > "${id}_scaffolds.fasta.gz"
+        mv spades/assembly_graph_with_scaffolds.gfa ${name}_graph.gfa
+        mv spades/scaffolds.fasta ${name}_scaffolds.fasta
+        mv spades/contigs.fasta ${name}_contigs.fasta
+        mv spades/spades.log ${name}.log
+        gzip "${name}_contigs.fasta"
+        gzip "${name}_graph.gfa"
+        gzip -c "${name}_scaffolds.fasta" > "${name}_scaffolds.fasta.gz"
         """
     else
         error "ERROR: '--spadeshybrid_fix_cpus' was specified, but not succesfully applied. Likely this is caused by changed process properties in a custom config file."
@@ -1015,20 +1105,20 @@ process spadeshybrid {
 
 
 process spades {
-    tag "$id"
-    publishDir "${params.outdir}/", mode: params.publish_dir_mode, pattern: "${id}*",
+    tag "$name"
+    publishDir "${params.outdir}/", mode: params.publish_dir_mode, pattern: "${name}*",
         saveAs: {filename -> 
           if (filename.indexOf(".log") > 0 || filename.indexOf("_scaffolds.fasta.gz") > 0 || filename.indexOf("_graph.gfa.gz") > 0 || filename.indexOf("_contigs.fasta.gz") > 0 ) "Assembly/SPAdes/$filename"
           else null}
     input:
-    set id, file(sr) from trimmed_reads_spades
+    set name, grp, file(sr) from ch_short_reads_spades
 
     output:
-    set val("SPAdes"), val("$id"), file("${id}_scaffolds.fasta") into (assembly_spades_to_quast, assembly_spades_to_metabat)
-    file("${id}.log")
-    file("${id}_contigs.fasta.gz")
-    file("${id}_scaffolds.fasta.gz")
-    file("${id}_graph.gfa.gz")
+    set val("SPAdes"), val(name), val(grp), file("${name}_scaffolds.fasta") into (ch_assembly_spades_to_quast, ch_assembly_spades_to_metabat)
+    file("${name}.log")
+    file("${name}_contigs.fasta.gz")
+    file("${name}_scaffolds.fasta.gz")
+    file("${name}_graph.gfa.gz")
 
     when:
     !params.single_end && !params.skip_spades
@@ -1043,13 +1133,13 @@ process spades {
             --pe1-1 ${sr[0]} \
             --pe1-2 ${sr[1]} \
             -o spades
-        mv spades/assembly_graph_with_scaffolds.gfa ${id}_graph.gfa
-        mv spades/scaffolds.fasta ${id}_scaffolds.fasta
-        mv spades/contigs.fasta ${id}_contigs.fasta
-        mv spades/spades.log ${id}.log
-        gzip "${id}_contigs.fasta"
-        gzip "${id}_graph.gfa"
-        gzip -c "${id}_scaffolds.fasta" > "${id}_scaffolds.fasta.gz"
+        mv spades/assembly_graph_with_scaffolds.gfa ${name}_graph.gfa
+        mv spades/scaffolds.fasta ${name}_scaffolds.fasta
+        mv spades/contigs.fasta ${name}_contigs.fasta
+        mv spades/spades.log ${name}.log
+        gzip "${name}_contigs.fasta"
+        gzip "${name}_graph.gfa"
+        gzip -c "${name}_scaffolds.fasta" > "${name}_scaffolds.fasta.gz"
         """
     else
         error "ERROR: '--spades_fix_cpus' was specified, but not succesfully applied. Likely this is caused by changed process properties in a custom config file."
@@ -1057,34 +1147,26 @@ process spades {
 
 
 process quast {
-    tag "$assembler-$sample"
+    tag "$assembler-$name"
     publishDir "${params.outdir}/Assembly/$assembler", mode: params.publish_dir_mode
 
     input:
-    set val(assembler), val(sample), file(assembly) from assembly_spades_to_quast.mix(assembly_megahit_to_quast).mix(assembly_spadeshybrid_to_quast)
+    set val(assembler), val(name), val(grp), file(assembly) from ch_assembly_spades_to_quast.mix(ch_assembly_megahit_to_quast).mix(ch_assembly_spadeshybrid_to_quast)
 
     output:
-    file("${sample}_QC/*") into quast_results
+    file("${name}_QC/*") into ch_quast_results
 
     when:
     !params.skip_quast
 
     script:
     """
-    metaquast.py --threads "${task.cpus}" --rna-finding --max-ref-number 0 -l "${assembler}-${sample}" "${assembly}" -o "${sample}_QC"
+    metaquast.py --threads "${task.cpus}" --rna-finding --max-ref-number 0 -l "${assembler}-${name}" "${assembly}" -o "${name}_QC"
     """
 }
 
-bowtie2_input = Channel.empty()
-
-assembly_all_to_metabat = assembly_spades_to_metabat.mix(assembly_megahit_to_metabat,assembly_spadeshybrid_to_metabat)
-
-(assembly_all_to_metabat, assembly_all_to_metabat_copy) = assembly_all_to_metabat.into(2)
-
-bowtie2_input = assembly_all_to_metabat
-    .combine(trimmed_reads_bowtie2)
-
-(bowtie2_input, bowtie2_input_copy) = bowtie2_input.into(2)
+ch_assembly_all_to_metabat = ch_assembly_spades_to_metabat.mix(ch_assembly_megahit_to_metabat,ch_assembly_spadeshybrid_to_metabat)
+(ch_assembly_all_to_metabat, ch_assembly_all_to_metabat_copy) = ch_assembly_all_to_metabat.into(2)
 
 /*
 ================================================================================
@@ -1092,20 +1174,45 @@ bowtie2_input = assembly_all_to_metabat
 ================================================================================
 */
 
+// combine assemblies with sample reads for binning depending on specified mapping mode
+// add dummy to allow combining by index
+ch_trimmed_reads_bowtie2 = ch_trimmed_reads_bowtie2.map{ name, grp, reads -> ["dummy", name, grp, reads] }
+ch_bowtie2_input = Channel.empty()
+if (params.binning_map_mode == 'all_vs_all'){
+    ch_bowtie2_input = ch_assembly_all_to_metabat
+        // .view()
+        .combine(ch_trimmed_reads_bowtie2)
+        .map{ assembler, name, grp, assembly, dummy, samplename, samplegrp, reads -> [assembler, name, grp, assembly, samplename, samplegrp, reads] }
+        // .view()
+} else if (params.binning_map_mode == 'all_in_group'){
+    ch_bowtie2_input = ch_assembly_all_to_metabat
+        // .view()
+        .combine(ch_trimmed_reads_bowtie2, by: 2)
+        .map{ assembler, name, grp, assembly, dummy, samplename, samplegrp, reads -> [assembler, name, grp, assembly, samplename, samplegrp, reads] }
+        // .view()
+} else {
+    ch_bowtie2_input = ch_assembly_all_to_metabat
+        // .view()
+        .combine(ch_trimmed_reads_bowtie2, by: 1)  // for mode 'separate': assuming 'name' corresponds to one sample name (not to pooled samples)
+        .map{ assembler, name, grp, assembly, dummy, samplename, samplegrp, reads -> [assembler, name, grp, assembly, samplename, samplegrp, reads] }
+        // .view()
+}
+(ch_bowtie2_input, ch_bowtie2_input_copy) = ch_bowtie2_input.into(2)
+
 process bowtie2 {
-    tag "$assembler-$sample"
+    tag "$assembler-$name"
 
     input:
-    set val(assembler), val(sample), file(assembly), val(sampleToMap), file(reads) from bowtie2_input
+    set val(assembler), val(name), val(grp1), file(assembly), val(samplename), val(samplegrp), file(reads) from ch_bowtie2_input
 
     output:
-    set val(assembler), val(sample), file("${assembler}-${sample}-${sampleToMap}.bam"), file("${assembler}-${sample}-${sampleToMap}.bam.bai") into assembly_mapping_for_metabat
+    set val(assembler), val(name), file("${assembler}-${name}-${samplename}.bam"), file("${assembler}-${name}-${samplename}.bam.bai") into ch_assembly_mapping_for_metabat
 
     when:
     !params.skip_binning
 
     script:
-    def name = "${assembler}-${sample}-${sampleToMap}"
+    def name = "${assembler}-${name}-${samplename}"
     def input = params.single_end ? "-U \"${reads}\"" :  "-1 \"${reads[0]}\" -2 \"${reads[1]}\""
         """
         bowtie2-build --threads "${task.cpus}" "${assembly}" ref
@@ -1116,23 +1223,22 @@ process bowtie2 {
         """
 }
 
-assembly_mapping_for_metabat = assembly_mapping_for_metabat.groupTuple(by:[0,1]).join(assembly_all_to_metabat_copy, by:[0,1])
-
-assembly_mapping_for_metabat = assembly_mapping_for_metabat.dump(tag:'assembly_mapping_for_metabat')
+ch_assembly_mapping_for_metabat = ch_assembly_mapping_for_metabat.groupTuple(by:[0,1]).join(ch_assembly_all_to_metabat_copy, by:[0,1])
+ch_assembly_mapping_for_metabat = ch_assembly_mapping_for_metabat.dump(tag:'assembly_mapping_for_metabat')
 
 process metabat {
-    tag "$assembler-$sample"
+    tag "$assembler-$name"
     publishDir "${params.outdir}/", mode: params.publish_dir_mode,
         saveAs: {filename -> (filename.indexOf(".bam") == -1 && filename.indexOf(".fastq.gz") == -1) ? "GenomeBinning/$filename" : null}
 
     input:
-    set val(assembler), val(sample), file(bam), file(index), file(assembly) from assembly_mapping_for_metabat
+    set val(assembler), val(name), file(bam), file(index), val(grp), file(assembly) from ch_assembly_mapping_for_metabat
     val(min_size) from params.min_contig_size
     val(max_unbinned) from params.max_unbinned_contigs
     val(min_length_unbinned) from params.min_length_unbinned_contigs
 
     output:
-    set val(assembler), val(sample), file("MetaBAT2/*.fa") into (metabat_bins, metabat_bins_for_cat, metabat_bins_quast_bins)
+    set val(assembler), val(name), file("MetaBAT2/*.fa") into (ch_metabat_bins, ch_metabat_bins_for_cat, ch_metabat_bins_quast_bins)
     file("MetaBAT2/discarded/*")
     file("${assembler}-${assembly}-depth.txt.gz")
 
@@ -1140,23 +1246,22 @@ process metabat {
     !params.skip_binning
 
     script:
-    def name = "${assembler}-${sample}"
     """
     OMP_NUM_THREADS=${task.cpus} jgi_summarize_bam_contig_depths --outputDepth depth.txt ${bam}
     gzip -c depth.txt > "${assembler}-${assembly}-depth.txt.gz"
-    metabat2 -t "${task.cpus}" -i "${assembly}" -a depth.txt -o "MetaBAT2/${name}" -m ${min_size} --unbinned --seed ${params.metabat_rng_seed}
+    metabat2 -t "${task.cpus}" -i "${assembly}" -a depth.txt -o "MetaBAT2/${assembler}-${name}" -m ${min_size} --unbinned --seed ${params.metabat_rng_seed}
 
     #save unbinned contigs above thresholds into individual files, dump others in one file
-    split_fasta.py MetaBAT2/${name}.unbinned.fa ${min_length_unbinned} ${max_unbinned} ${min_size}
+    split_fasta.py "MetaBAT2/${assembler}-${name}.unbinned.fa" ${min_length_unbinned} ${max_unbinned} ${min_size}
 
     mkdir MetaBAT2/discarded
-    mv MetaBAT2/${name}.lowDepth.fa MetaBAT2/discarded/
-    mv MetaBAT2/${name}.tooShort.fa MetaBAT2/discarded/
-    mv MetaBAT2/${name}.unbinned.pooled.fa MetaBAT2/discarded/
-    mv MetaBAT2/${name}.unbinned.remaining.fa MetaBAT2/discarded/
+    mv "MetaBAT2/${assembler}-${name}.lowDepth.fa" MetaBAT2/discarded/
+    mv "MetaBAT2/${assembler}-${name}.tooShort.fa" MetaBAT2/discarded/
+    mv "MetaBAT2/${assembler}-${name}.unbinned.pooled.fa" MetaBAT2/discarded/
+    mv "MetaBAT2/${assembler}-${name}.unbinned.remaining.fa" MetaBAT2/discarded/
 
     #rename splitted file so that it doesnt end up in following processes
-    mv MetaBAT2/${name}.unbinned.fa ${name}.unbinned.fa
+    mv "MetaBAT2/${assembler}-${name}.unbinned.fa" "${assembler}-${name}.unbinned.fa"
     """
 }
 
@@ -1166,10 +1271,10 @@ process busco_db_preparation {
         saveAs: {filename -> (params.save_busco_reference && filename.indexOf(".tar.gz") > 0) ? "reference/$filename" : null}
 
     input:
-    file(database) from file_busco_db
+    file(database) from ch_busco_db_file
 
     output:
-    file("buscodb/*") into busco_db
+    file("buscodb/*") into ch_busco_db
     file(database)
 
     script:
@@ -1179,10 +1284,10 @@ process busco_db_preparation {
     """
 }
 
-metabat_bins
+ch_metabat_bins
     .transpose()
-    .combine(busco_db)
-    .set { metabat_db_busco }
+    .combine(ch_busco_db)
+    .set { ch_metabat_db_busco }
 
 /*
  * BUSCO: Quantitative measures for the assessment of genome assembly
@@ -1192,10 +1297,10 @@ process busco {
     publishDir "${params.outdir}/GenomeBinning/QC/BUSCO/", mode: params.publish_dir_mode
 
     input:
-    set val(assembler), val(sample), file(bin), file(db) from metabat_db_busco
+    set val(assembler), val(name), file(bin), file(db) from ch_metabat_db_busco
 
     output:
-    set val(assembler), val(sample), file("short_summary.specific.*.${bin}.txt") into (ch_busco_multiqc, ch_busco_to_summary, ch_busco_plot)
+    set val(assembler), val(name), file("short_summary.specific.*.${bin}.txt") into (ch_busco_multiqc, ch_busco_to_summary, ch_busco_plot)
     file("${bin}_busco.log")
     file("${bin}_buscos.faa.gz") optional true
     file("${bin}_buscos.fna.gz") optional true
@@ -1261,35 +1366,34 @@ ch_busco_to_summary = ch_busco_to_summary.map{it[2]}
 ch_busco_plot = ch_busco_plot.groupTuple(by: [0,1])
 
 process busco_plot {
-    tag "$assembler-$sample"
+    tag "$assembler-$name"
     publishDir "${params.outdir}/GenomeBinning/QC/BUSCO/", mode: params.publish_dir_mode
 
     input:
-    set val(assembler), val(sample), file(summaries) from ch_busco_plot
+    set val(assembler), val(name), file(summaries) from ch_busco_plot
 
     output:
-    file("${assembler}-${sample}-busco_figure.png")
-    file("${assembler}-${sample}-busco_figure.R")
-    file("${assembler}-${sample}-busco_summary.txt")
+    file("${assembler}-${name}-busco_figure.png")
+    file("${assembler}-${name}-busco_figure.R")
+    file("${assembler}-${name}-busco_summary.txt")
 
     script:
-    def name = "${assembler}-${sample}"
     """
     # replace dots in bin names within summary file names by underscores
     # currently (BUSCO v4.1.3) generate_plot.py does not allow further dots
     for sum in ${summaries}; do
-        [[ \${sum} =~ short_summary.(.*).${name}.(.*).txt ]];
+        [[ \${sum} =~ short_summary.(.*).${assembler}-${name}.(.*).txt ]];
         db_name=\${BASH_REMATCH[1]}
-        bin="${name}.\${BASH_REMATCH[2]}"
+        bin="${assembler}-${name}.\${BASH_REMATCH[2]}"
         bin_new="\${bin//./_}"
         mv \${sum} short_summary.\${db_name}.\${bin_new}.txt
     done
     generate_plot.py --working_directory .
 
-    mv busco_figure.png ${assembler}-${sample}-busco_figure.png
-    mv busco_figure.R ${assembler}-${sample}-busco_figure.R
+    mv busco_figure.png ${assembler}-${name}-busco_figure.png
+    mv busco_figure.R ${assembler}-${name}-busco_figure.R
 
-    summary_busco.py short_summary.*.txt > ${assembler}-${sample}-busco_summary.txt
+    summary_busco.py short_summary.*.txt > ${assembler}-${name}-busco_summary.txt
     """
 }
 
@@ -1300,7 +1404,7 @@ process busco_summary {
     file("short_summary.*.txt") from ch_busco_to_summary.collect()
 
     output:
-    file("busco_summary.txt") into busco_summary
+    file("busco_summary.txt") into ch_busco_summary
 
     script:
     """
@@ -1310,15 +1414,15 @@ process busco_summary {
 
 
 process quast_bins {
-    tag "$assembler-$sample"
+    tag "$assembler-$name"
     publishDir "${params.outdir}/GenomeBinning/QC/", mode: params.publish_dir_mode
 
     input:
-    set val(assembler), val(sample), file(bins) from metabat_bins_quast_bins
+    set val(assembler), val(name), file(bins) from ch_metabat_bins_quast_bins
 
     output:
     path("QUAST/*") type('dir')
-    file("QUAST/*-quast_summary.tsv") into quast_bin_summaries
+    file("QUAST/*-quast_summary.tsv") into ch_quast_bin_summaries
 
     when:
     !params.skip_quast
@@ -1330,10 +1434,10 @@ process quast_bins {
 
     for bin in \"\${bins[@]}\"; do
         metaquast.py --threads "${task.cpus}" --max-ref-number 0 --rna-finding --gene-finding -l "\${bin}" "\${bin}" -o "QUAST/\${bin}"
-        if ! [ -f "QUAST/${assembler}-${sample}-quast_summary.tsv" ]; then 
-            cp "QUAST/\${bin}/transposed_report.tsv" "QUAST/${assembler}-${sample}-quast_summary.tsv"
+        if ! [ -f "QUAST/${assembler}-${name}-quast_summary.tsv" ]; then 
+            cp "QUAST/\${bin}/transposed_report.tsv" "QUAST/${assembler}-${name}-quast_summary.tsv"
         else
-            tail -n +2 "QUAST/\${bin}/transposed_report.tsv" >> "QUAST/${assembler}-${sample}-quast_summary.tsv"
+            tail -n +2 "QUAST/\${bin}/transposed_report.tsv" >> "QUAST/${assembler}-${name}-quast_summary.tsv"
         fi
     done
     """
@@ -1343,8 +1447,8 @@ process merge_quast_and_busco {
     publishDir "${params.outdir}/GenomeBinning/QC/", mode: params.publish_dir_mode
 
     input:
-    file(quast_bin_sum) from quast_bin_summaries.collect()
-    file(busco_sum) from busco_summary
+    file(quast_bin_sum) from ch_quast_bin_summaries.collect()
+    file(busco_sum) from ch_busco_summary
 
     output:
     file("quast_and_busco_summary.tsv")
@@ -1374,10 +1478,10 @@ process cat_db {
     tag "${database.baseName}"
 
     input:
-    file(database) from file_cat_db
+    file(database) from ch_cat_db_file
 
     output:
-    set val("${database.toString().replace(".tar.gz", "")}"), file("database/*"), file("taxonomy/*") into cat_db
+    set val("${database.toString().replace(".tar.gz", "")}"), file("database/*"), file("taxonomy/*") into ch_cat_db
 
     script:
     """
@@ -1388,12 +1492,12 @@ process cat_db {
     """
 }
 
-metabat_bins_for_cat
-    .combine(cat_db)
-    .set { cat_input }
+ch_metabat_bins_for_cat
+    .combine(ch_cat_db)
+    .set { ch_cat_input }
 
 process cat {
-    tag "${assembler}-${sample}-${db_name}"
+    tag "${assembler}-${name}-${db_name}"
     publishDir "${params.outdir}/Taxonomy/${assembler}", mode: params.publish_dir_mode,
     saveAs: {filename ->
         if (filename.indexOf(".names.txt") > 0) filename
@@ -1401,7 +1505,7 @@ process cat {
     }
 
     input:
-    set val(assembler), val(sample), file("bins/*"), val(db_name), file("database/*"), file("taxonomy/*") from cat_input
+    set val(assembler), val(name), file("bins/*"), val(db_name), file("database/*"), file("taxonomy/*") from ch_cat_input
 
     output:
     file("*.ORF2LCA.txt")
@@ -1413,9 +1517,9 @@ process cat {
 
     script:
     """
-    CAT bins -b "bins/" -d database/ -t taxonomy/ -n "${task.cpus}" -s .fa --top 6 -o "${assembler}-${sample}" --I_know_what_Im_doing
-    CAT add_names -i "${assembler}-${sample}.ORF2LCA.txt" -o "${assembler}-${sample}.ORF2LCA.names.txt" -t taxonomy/
-    CAT add_names -i "${assembler}-${sample}.bin2classification.txt" -o "${assembler}-${sample}.bin2classification.names.txt" -t taxonomy/
+    CAT bins -b "bins/" -d database/ -t taxonomy/ -n "${task.cpus}" -s .fa --top 6 -o "${assembler}-${name}" --I_know_what_Im_doing
+    CAT add_names -i "${assembler}-${name}.ORF2LCA.txt" -o "${assembler}-${name}.ORF2LCA.names.txt" -t taxonomy/
+    CAT add_names -i "${assembler}-${name}.bin2classification.txt" -o "${assembler}-${name}.bin2classification.names.txt" -t taxonomy/
     """
 }
 
@@ -1431,10 +1535,10 @@ process multiqc {
     input:
     file (multiqc_config) from ch_multiqc_config
     file (mqc_custom_config) from ch_multiqc_custom_config.collect().ifEmpty([])
-    file (fastqc_raw:'fastqc/*') from fastqc_results.collect().ifEmpty([])
-    file (fastqc_trimmed:'fastqc/*') from fastqc_results_trimmed.collect().ifEmpty([])
+    file (fastqc_raw:'fastqc/*') from ch_fastqc_results.collect().ifEmpty([])
+    file (fastqc_trimmed:'fastqc/*') from ch_fastqc_results_trimmed.collect().ifEmpty([])
     file (host_removal) from ch_host_removed_log.collect().ifEmpty([])
-    file ('quast*/*') from quast_results.collect().ifEmpty([])
+    file ('quast*/*') from ch_quast_results.collect().ifEmpty([])
     file (short_summary) from ch_busco_multiqc.collect().ifEmpty([])
     file ('software_versions/*') from ch_software_versions_yaml.collect()
     file workflow_summary from ch_workflow_summary.collectFile(name: "workflow_summary_mqc.yaml")
